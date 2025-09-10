@@ -421,7 +421,7 @@ async def cmd_debug_wishes(message: Message):
 @router.message(F.text == "/guests")
 async def cmd_guests_list(message: Message):
     """Показать список пользователей, подтвердивших участие"""
-    if not await is_admin(message.from_user.id):
+    if not is_admin(message.from_user.id):
         await message.answer(ADMIN_ONLY)
         return
     
@@ -469,7 +469,7 @@ async def cmd_guests_list(message: Message):
 @router.message(F.text == "/users")
 async def cmd_users_stats(message: Message):
     """Показать статистику всех пользователей бота"""
-    if not await is_admin(message.from_user.id):
+    if not is_admin(message.from_user.id):
         await message.answer(ADMIN_ONLY)
         return
     
