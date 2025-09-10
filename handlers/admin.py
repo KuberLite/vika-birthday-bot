@@ -15,7 +15,7 @@ from config.texts import (
     ALBUM_SENT,
     STATS_MESSAGE
 )
-from handlers.utils import send_birthday_wishes, create_album
+from handlers.utils import send_birthday_wishes, create_album, get_confirmed_guests_list, get_all_users_stats
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -179,24 +179,26 @@ async def cmd_admin_help(message: Message):
         help_text = """
 🔧 <b>Админские команды:</b>
 
-/open_presents - Вручную отправить все поздравления
+📊 <b>Статистика:</b>
+/stats - Общая статистика бота
+/users - Подробная статистика пользователей  
+/guests - Список подтвердивших участие
+
+🔍 <b>Отладка:</b>
+/debug_wishes - Последние поздравления
+
+🎁 <b>Действия:</b>
+/open_presents - Отправить все поздравления
 /get_album - Получить собранный альбом
-/stats - Показать статистику бота
-/broadcast &lt;текст&gt; - Рассылка сообщения всем пользователям
-/set_start_photo yes|no - Установить стартовое фото (ответить на фото)
-/get_start_photos - Показать текущие стартовые фото
-/get_song_requests - Показать предложения треков
+/get_song_requests - Предложения треков
+
+⚙️ <b>Настройки:</b>
+/broadcast &lt;текст&gt; - Рассылка всем пользователям
+/set_start_photo yes|no - Установить стартовое фото
+/get_start_photos - Показать стартовые фото
 /admin - Показать это сообщение
 
-📊 <b>Статистика:</b>
-• Пользователи: количество зарегистрированных
-• Поздравления: количество отправленных поздравлений
-• Файлы: количество файлов в альбоме
-• Треки: количество предложений треков
-
-📸 <b>Стартовые фото:</b>
-• Отправьте фото и ответьте командой /set_start_photo yes
-• Отправьте фото и ответьте командой /set_start_photo no
+⚠️ <b>Внимание:</b> Команды работают только для администраторов.
         """
         
         await message.answer(help_text)
@@ -414,4 +416,93 @@ async def cmd_debug_wishes(message: Message):
     except Exception as e:
         logger.error(f"Ошибка в cmd_debug_wishes: {e}")
         await message.answer("❌ Произошла ошибка при получении поздравлений.")
+
+
+@router.message(F.text == "/guests")
+async def cmd_guests_list(message: Message):
+    """Показать список пользователей, подтвердивших участие"""
+    if not await is_admin(message.from_user.id):
+        await message.answer(ADMIN_ONLY)
+        return
+    
+    try:
+        guests = await get_confirmed_guests_list()
+        
+        if not guests:
+            await message.answer("👥 Пока никто не подтвердил участие в вечеринке")
+            return
+        
+        text = f"👥 Подтвердили участие ({len(guests)} чел.):\n\n"
+        
+        for i, guest in enumerate(guests, 1):
+            text += f"{i}. {guest['display_name']}\n"
+            text += f"   📅 {guest['confirmed_at'][:16]}\n\n"
+        
+        # Разбиваем на части если слишком длинно
+        if len(text) > 4000:
+            parts = []
+            lines = text.split('\n\n')
+            current_part = f"👥 Подтвердили участие ({len(guests)} чел.):\n\n"
+            
+            for line in lines[1:]:  # Пропускаем заголовок
+                if len(current_part + line + '\n\n') > 3800:
+                    parts.append(current_part)
+                    current_part = line + '\n\n'
+                else:
+                    current_part += line + '\n\n'
+            
+            if current_part.strip():
+                parts.append(current_part)
+            
+            for part in parts:
+                await message.answer(part)
+        else:
+            await message.answer(text)
+        
+        logger.info(f"Админ {message.from_user.id} запросил список гостей")
+        
+    except Exception as e:
+        logger.error(f"Ошибка в cmd_guests_list: {e}")
+        await message.answer("❌ Ошибка при получении списка гостей")
+
+
+@router.message(F.text == "/users")
+async def cmd_users_stats(message: Message):
+    """Показать статистику всех пользователей бота"""
+    if not await is_admin(message.from_user.id):
+        await message.answer(ADMIN_ONLY)
+        return
+    
+    try:
+        stats = await get_all_users_stats()
+        
+        if not stats:
+            await message.answer("❌ Ошибка при получении статистики")
+            return
+        
+        text = f"""📊 Статистика пользователей бота:
+
+👥 Всего пользователей: {stats['total_users']}
+
+💭 Ответы на вопрос "Помнишь Вику?":
+✅ Да, помню: {stats['remembers_vika']}
+❌ Нет, не помню: {stats['not_remembers_vika']}
+❓ Не ответили: {stats['no_answer']}
+
+🎉 Активность:
+💌 Поздравлений отправлено: {stats['wishes_count']}
+📸 Файлов в альбоме: {stats['album_files_count']}
+🎵 Предложений треков: {stats['songs_count']}
+👥 Подтвердили участие: {stats['confirmed_guests_count']}
+
+📈 Процент вовлеченности:
+Поздравления: {round(stats['wishes_count'] / max(stats['total_users'], 1) * 100, 1)}%
+Участие: {round(stats['confirmed_guests_count'] / max(stats['total_users'], 1) * 100, 1)}%"""
+        
+        await message.answer(text)
+        logger.info(f"Админ {message.from_user.id} запросил статистику пользователей")
+        
+    except Exception as e:
+        logger.error(f"Ошибка в cmd_users_stats: {e}")
+        await message.answer("❌ Ошибка при получении статистики")
 

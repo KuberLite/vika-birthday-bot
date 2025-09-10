@@ -270,6 +270,93 @@ async def is_guest_confirmed(user_id: int) -> bool:
         return False
 
 
+async def get_confirmed_guests_list():
+    """Получить список пользователей, подтвердивших участие, с их именами"""
+    try:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            async with db.execute("""
+                SELECT u.user_id, u.first_name, u.last_name, u.username, gc.confirmed_at
+                FROM guest_confirmations gc
+                JOIN users u ON gc.user_id = u.user_id
+                ORDER BY gc.confirmed_at ASC
+            """) as cursor:
+                results = await cursor.fetchall()
+                
+                guests = []
+                for row in results:
+                    user_id, first_name, last_name, username, confirmed_at = row
+                    
+                    # Формируем отображаемое имя
+                    display_name = first_name or "Неизвестно"
+                    if last_name:
+                        display_name += f" {last_name}"
+                    
+                    if username:
+                        display_name += f" (@{username})"
+                    
+                    guests.append({
+                        'user_id': user_id,
+                        'display_name': display_name,
+                        'confirmed_at': confirmed_at
+                    })
+                
+                return guests
+    except Exception as e:
+        logger.error(f"Ошибка получения списка гостей: {e}")
+        return []
+
+
+async def get_all_users_stats():
+    """Получить статистику по всем пользователям бота"""
+    try:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            # Общее количество пользователей
+            async with db.execute("SELECT COUNT(*) FROM users") as cursor:
+                total_users = (await cursor.fetchone())[0]
+            
+            # Пользователи, которые помнят Вику
+            async with db.execute("SELECT COUNT(*) FROM users WHERE remembers_vika = 1") as cursor:
+                remembers_count = (await cursor.fetchone())[0]
+            
+            # Пользователи, которые не помнят Вику
+            async with db.execute("SELECT COUNT(*) FROM users WHERE remembers_vika = 0") as cursor:
+                not_remembers_count = (await cursor.fetchone())[0]
+            
+            # Пользователи без ответа
+            async with db.execute("SELECT COUNT(*) FROM users WHERE remembers_vika IS NULL") as cursor:
+                no_answer_count = (await cursor.fetchone())[0]
+            
+            # Количество поздравлений
+            async with db.execute("SELECT COUNT(*) FROM wishes") as cursor:
+                wishes_count = (await cursor.fetchone())[0]
+            
+            # Количество файлов в альбоме
+            async with db.execute("SELECT COUNT(*) FROM album_files") as cursor:
+                album_files_count = (await cursor.fetchone())[0]
+            
+            # Количество предложений треков
+            async with db.execute("SELECT COUNT(*) FROM song_requests") as cursor:
+                songs_count = (await cursor.fetchone())[0]
+            
+            # Количество подтвердивших участие
+            async with db.execute("SELECT COUNT(*) FROM guest_confirmations") as cursor:
+                confirmed_guests_count = (await cursor.fetchone())[0]
+            
+            return {
+                'total_users': total_users,
+                'remembers_vika': remembers_count,
+                'not_remembers_vika': not_remembers_count,
+                'no_answer': no_answer_count,
+                'wishes_count': wishes_count,
+                'album_files_count': album_files_count,
+                'songs_count': songs_count,
+                'confirmed_guests_count': confirmed_guests_count
+            }
+    except Exception as e:
+        logger.error(f"Ошибка получения статистики пользователей: {e}")
+        return None
+
+
 # === ТАЙМЕР ДО ДНЯ РОЖДЕНИЯ ===
 def get_days_until_birthday() -> int:
     """Получить количество дней до дня рождения"""
