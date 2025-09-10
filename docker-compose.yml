@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  vikas-birthday-bot:
+    build: .
+    container_name: vikas-birthday-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./media:/app/media
+    environment:
+      - TZ=Europe/Moscow
+    networks:
+      - bot-network
+
+networks:
+  bot-network:
+    driver: bridge
+
