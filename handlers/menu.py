@@ -73,12 +73,10 @@ async def show_main_menu(message: Message, user_id: int):
                 elif "Поздравить Вику" in button_text:
                     builder.button(text=button_text, callback_data="send_wish")
                 elif "фотки" in button_text:
-                    # Временно всегда разрешаем загрузку для тестирования
-                    builder.button(text=button_text, callback_data="upload_photos")
-                    # if is_after_birthday():
-                    #     builder.button(text=button_text, callback_data="upload_photos")
-                    # else:
-                    #     builder.button(text=button_text, callback_data="album_not_ready")
+                    if is_after_birthday():
+                        builder.button(text=button_text, callback_data="upload_photos")
+                    else:
+                        builder.button(text=button_text, callback_data="album_not_ready")
                 elif "Вика-гадалка" in button_text:
                     builder.button(text=button_text, callback_data="fortune")
                 elif "Я буду" in button_text:
