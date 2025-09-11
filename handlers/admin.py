@@ -7,6 +7,8 @@ from datetime import datetime
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram import Bot
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 
 from config.settings import ADMIN_IDS
 from config.texts import (
@@ -15,10 +17,19 @@ from config.texts import (
     ALBUM_SENT,
     STATS_MESSAGE
 )
-from handlers.utils import send_birthday_wishes, create_album, get_confirmed_guests_list, get_all_users_stats
+from handlers.utils import (
+    send_birthday_wishes, create_album, get_confirmed_guests_list, get_all_users_stats,
+    add_wishlist_item, get_wishlist_items, delete_wishlist_item, format_wishlist
+)
 
 router = Router()
 logger = logging.getLogger(__name__)
+
+
+class WishlistStates(StatesGroup):
+    """Состояния для управления вишлистом"""
+    waiting_for_item = State()
+    waiting_for_delete_id = State()
 
 
 def is_admin(user_id: int) -> bool:
@@ -192,10 +203,16 @@ async def cmd_admin_help(message: Message):
 /get_album - Получить собранный альбом
 /get_song_requests - Предложения треков
 
+🎁 <b>Управление вишлистом:</b>
+/add_wishlist_item - Добавить элемент в вишлист
+/delete_wishlist_item - Удалить элемент из вишлиста
+/show_wishlist_admin - Показать вишлист с ID
+
 ⚙️ <b>Настройки:</b>
 /broadcast &lt;текст&gt; - Рассылка всем пользователям
 /set_start_photo yes|no - Установить стартовое фото
 /get_start_photos - Показать стартовые фото
+/cancel - Отменить текущую операцию
 /admin - Показать это сообщение
 
 ⚠️ <b>Внимание:</b> Команды работают только для администраторов.
@@ -505,4 +522,188 @@ async def cmd_users_stats(message: Message):
     except Exception as e:
         logger.error(f"Ошибка в cmd_users_stats: {e}")
         await message.answer("❌ Ошибка при получении статистики")
+
+
+# === УПРАВЛЕНИЕ ВИШЛИСТОМ ===
+
+@router.message(F.text == "/add_wishlist_item")
+async def cmd_add_wishlist_item(message: Message, state: FSMContext):
+    """Начать добавление элемента в вишлист"""
+    try:
+        user_id = message.from_user.id
+        
+        if not is_admin(user_id):
+            await message.answer(ADMIN_ONLY)
+            return
+        
+        await message.answer(
+            "🎁 Добавление элемента в вишлист\n\n"
+            "Отправьте текст элемента, который нужно добавить в вишлист Вики.\n\n"
+            "Используйте /cancel для отмены."
+        )
+        
+        await state.set_state(WishlistStates.waiting_for_item)
+        logger.info(f"Админ {user_id} начал добавление элемента в вишлист")
+        
+    except Exception as e:
+        logger.error(f"Ошибка в cmd_add_wishlist_item: {e}")
+        await message.answer("❌ Произошла ошибка.")
+
+
+@router.message(F.text, WishlistStates.waiting_for_item)
+async def handle_add_wishlist_item(message: Message, state: FSMContext):
+    """Обработать добавление элемента в вишлист"""
+    try:
+        user_id = message.from_user.id
+        
+        if not is_admin(user_id):
+            await message.answer(ADMIN_ONLY)
+            await state.clear()
+            return
+        
+        item_text = message.text.strip()
+        
+        if not item_text:
+            await message.answer("❌ Текст элемента не может быть пустым. Попробуйте еще раз.")
+            return
+        
+        success = await add_wishlist_item(item_text, user_id)
+        
+        if success:
+            await message.answer(f"✅ Элемент добавлен в вишлист:\n\n📝 {item_text}")
+            logger.info(f"Админ {user_id} добавил элемент в вишлист: {item_text}")
+        else:
+            await message.answer("❌ Ошибка при добавлении элемента в вишлист.")
+        
+        await state.clear()
+        
+    except Exception as e:
+        logger.error(f"Ошибка в handle_add_wishlist_item: {e}")
+        await message.answer("❌ Произошла ошибка при добавлении элемента.")
+        await state.clear()
+
+
+@router.message(F.text == "/show_wishlist_admin")
+async def cmd_show_wishlist_admin(message: Message):
+    """Показать вишлист с ID элементов для админа"""
+    try:
+        user_id = message.from_user.id
+        
+        if not is_admin(user_id):
+            await message.answer(ADMIN_ONLY)
+            return
+        
+        items = await get_wishlist_items()
+        
+        if not items:
+            await message.answer("📭 Вишлист пуст.")
+            return
+        
+        response = "🎁 <b>Вишлист Вики (админ-режим):</b>\n\n"
+        
+        for item_id, text, timestamp in items:
+            response += f"<b>ID {item_id}:</b> {text}\n"
+            response += f"📅 {timestamp[:16]}\n\n"
+        
+        response += f"<b>Всего элементов:</b> {len(items)}\n\n"
+        response += "💡 <b>Команды:</b>\n"
+        response += "/add_wishlist_item - добавить элемент\n"
+        response += "/delete_wishlist_item - удалить элемент"
+        
+        await message.answer(response)
+        
+    except Exception as e:
+        logger.error(f"Ошибка в cmd_show_wishlist_admin: {e}")
+        await message.answer("❌ Произошла ошибка при получении вишлиста.")
+
+
+@router.message(F.text == "/delete_wishlist_item")
+async def cmd_delete_wishlist_item(message: Message, state: FSMContext):
+    """Начать удаление элемента из вишлиста"""
+    try:
+        user_id = message.from_user.id
+        
+        if not is_admin(user_id):
+            await message.answer(ADMIN_ONLY)
+            return
+        
+        items = await get_wishlist_items()
+        
+        if not items:
+            await message.answer("📭 Вишлист пуст - нечего удалять.")
+            return
+        
+        response = "🗑 <b>Удаление элемента из вишлиста</b>\n\n"
+        response += "Выберите ID элемента для удаления:\n\n"
+        
+        for item_id, text, timestamp in items:
+            response += f"<b>ID {item_id}:</b> {text}\n\n"
+        
+        response += "Отправьте ID элемента, который нужно удалить.\n"
+        response += "Используйте /cancel для отмены."
+        
+        await message.answer(response)
+        await state.set_state(WishlistStates.waiting_for_delete_id)
+        logger.info(f"Админ {user_id} начал удаление элемента из вишлиста")
+        
+    except Exception as e:
+        logger.error(f"Ошибка в cmd_delete_wishlist_item: {e}")
+        await message.answer("❌ Произошла ошибка.")
+
+
+@router.message(F.text, WishlistStates.waiting_for_delete_id)
+async def handle_delete_wishlist_item(message: Message, state: FSMContext):
+    """Обработать удаление элемента из вишлиста"""
+    try:
+        user_id = message.from_user.id
+        
+        if not is_admin(user_id):
+            await message.answer(ADMIN_ONLY)
+            await state.clear()
+            return
+        
+        try:
+            item_id = int(message.text.strip())
+        except ValueError:
+            await message.answer("❌ Неверный формат ID. Введите числовой ID элемента.")
+            return
+        
+        success = await delete_wishlist_item(item_id)
+        
+        if success:
+            await message.answer(f"✅ Элемент с ID {item_id} удален из вишлиста.")
+            logger.info(f"Админ {user_id} удалил элемент ID {item_id} из вишлиста")
+        else:
+            await message.answer(f"❌ Элемент с ID {item_id} не найден.")
+        
+        await state.clear()
+        
+    except Exception as e:
+        logger.error(f"Ошибка в handle_delete_wishlist_item: {e}")
+        await message.answer("❌ Произошла ошибка при удалении элемента.")
+        await state.clear()
+
+
+@router.message(F.text == "/cancel")
+async def cmd_cancel_admin(message: Message, state: FSMContext):
+    """Отменить текущую операцию админа"""
+    try:
+        user_id = message.from_user.id
+        
+        if not is_admin(user_id):
+            await message.answer(ADMIN_ONLY)
+            return
+        
+        current_state = await state.get_state()
+        
+        if current_state:
+            await state.clear()
+            await message.answer("✅ Операция отменена.")
+            logger.info(f"Админ {user_id} отменил операцию в состоянии {current_state}")
+        else:
+            await message.answer("❌ Нет активных операций для отмены.")
+        
+    except Exception as e:
+        logger.error(f"Ошибка в cmd_cancel_admin: {e}")
+        await message.answer("❌ Произошла ошибка.")
 

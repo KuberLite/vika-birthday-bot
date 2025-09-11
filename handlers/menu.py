@@ -155,8 +155,12 @@ async def show_what_to_bring(callback: CallbackQuery):
 async def show_wishlist(callback: CallbackQuery):
     """Показать вишлист"""
     try:
+        from handlers.utils import format_wishlist
+        
+        wishlist_text = await format_wishlist()
+        
         await callback.message.edit_text(
-            WISHLIST,
+            wishlist_text,
             reply_markup=get_back_to_menu_keyboard()
         )
         await callback.answer()

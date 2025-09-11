@@ -99,6 +99,17 @@ async def init_database():
                 )
             """)
             
+            # Таблица элементов вишлиста
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS wishlist_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    text TEXT NOT NULL,
+                    added_by INTEGER,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (added_by) REFERENCES users (user_id)
+                )
+            """)
+            
             # Таблица стартовых фото
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS start_photos (
@@ -618,3 +629,73 @@ async def get_all_song_requests():
     except Exception as e:
         logger.error(f"Ошибка получения предложений треков: {e}")
         return []
+
+
+# === РАБОТА С ВИШЛИСТОМ ===
+
+async def add_wishlist_item(item_text: str, admin_id: int):
+    """Добавить элемент в вишлист"""
+    try:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            await db.execute("""
+                INSERT INTO wishlist_items (text, added_by)
+                VALUES (?, ?)
+            """, (item_text, admin_id))
+            await db.commit()
+            logger.info(f"Элемент вишлиста добавлен: {item_text} (админ {admin_id})")
+            return True
+    except Exception as e:
+        logger.error(f"Ошибка добавления элемента вишлиста: {e}")
+        return False
+
+
+async def get_wishlist_items():
+    """Получить все элементы вишлиста"""
+    try:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            async with db.execute("""
+                SELECT id, text, timestamp
+                FROM wishlist_items
+                ORDER BY timestamp ASC
+            """) as cursor:
+                rows = await cursor.fetchall()
+                return rows
+    except Exception as e:
+        logger.error(f"Ошибка получения элементов вишлиста: {e}")
+        return []
+
+
+async def delete_wishlist_item(item_id: int):
+    """Удалить элемент из вишлиста"""
+    try:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            cursor = await db.execute("""
+                DELETE FROM wishlist_items WHERE id = ?
+            """, (item_id,))
+            await db.commit()
+            if cursor.rowcount > 0:
+                logger.info(f"Элемент вишлиста удален: ID {item_id}")
+                return True
+            else:
+                logger.warning(f"Элемент вишлиста не найден: ID {item_id}")
+                return False
+    except Exception as e:
+        logger.error(f"Ошибка удаления элемента вишлиста: {e}")
+        return False
+
+
+async def format_wishlist():
+    """Форматировать вишлист для отображения"""
+    items = await get_wishlist_items()
+    
+    if not items:
+        return "🎁 Вишлист Вики:\n\nЗдесь пока ничего нет 🫠\n\nГлавное - внимание и любовь! ❤️"
+    
+    wishlist_text = "🎁 Вишлист Вики:\n\n"
+    
+    for i, (item_id, text, timestamp) in enumerate(items, 1):
+        wishlist_text += f"{i}. {text}\n"
+    
+    wishlist_text += "\nГлавное - внимание и любовь! ❤️"
+    
+    return wishlist_text
