@@ -62,9 +62,14 @@ async def cmd_open_presents(message: Message, bot: Bot):
         await message.answer("❌ Произошла ошибка при отправке поздравлений.")
 
 
-@router.message(F.text == "/get_album")
+@router.message(F.text.startswith("/get_album"))
 async def cmd_get_album(message: Message, bot: Bot):
-    """Получить собранный альбом"""
+    """Получить собранный альбом
+    
+    Использование:
+    /get_album - создать и отправить альбом всем пользователям
+    /get_album debug - создать и отправить альбом только админам (дебаг режим)
+    """
     try:
         user_id = message.from_user.id
         
@@ -72,18 +77,55 @@ async def cmd_get_album(message: Message, bot: Bot):
             await message.answer(ADMIN_ONLY)
             return
         
-        await message.answer("📸 Создаю альбом...")
+        # Проверяем, включен ли дебаг режим
+        command_parts = message.text.split()
+        debug_mode = len(command_parts) > 1 and command_parts[1].lower() == "debug"
+        
+        if debug_mode:
+            await message.answer("📸 Создаю альбом в дебаг режиме (только для админов)...")
+        else:
+            await message.answer("📸 Создаю альбом...")
         
         # Создаем альбом
-        await create_album(bot)
+        await create_album(bot, debug_mode=debug_mode)
         
-        await message.answer("✅ Альбом создан и отправлен!")
-        
-        logger.info(f"Админ {user_id} вручную создал альбом")
+        if debug_mode:
+            await message.answer("✅ Альбом создан и отправлен в дебаг режиме!")
+            logger.info(f"Админ {user_id} вручную создал альбом в дебаг режиме")
+        else:
+            await message.answer("✅ Альбом создан и отправлен!")
+            logger.info(f"Админ {user_id} вручную создал альбом")
         
     except Exception as e:
         logger.error(f"Ошибка в cmd_get_album: {e}")
         await message.answer("❌ Произошла ошибка при создании альбома.")
+
+
+@router.message(F.text == "/send_new_photos")
+async def cmd_send_new_photos(message: Message, bot: Bot):
+    """Вручную отправить новые фото пользователям"""
+    try:
+        user_id = message.from_user.id
+        
+        if not is_admin(user_id):
+            await message.answer(ADMIN_ONLY)
+            return
+        
+        await message.answer("📸 Проверяю новые фото и отправляю пользователям...")
+        
+        # Импортируем функцию из utils
+        from handlers.utils import send_new_photos_to_users
+        
+        # Отправляем новые фото
+        await send_new_photos_to_users(bot)
+        
+        await message.answer("✅ Проверка и отправка новых фото завершена!")
+        
+        logger.info(f"Админ {user_id} вручную запустил отправку новых фото")
+        
+    except Exception as e:
+        logger.error(f"Ошибка в cmd_send_new_photos: {e}")
+        await message.answer("❌ Произошла ошибка при отправке новых фото.")
 
 
 @router.message(F.text == "/stats")
@@ -200,7 +242,9 @@ async def cmd_admin_help(message: Message):
 
 🎁 <b>Действия:</b>
 /open_presents - Отправить все поздравления
-/get_album - Получить собранный альбом
+/get_album - Получить собранный альбом (всем пользователям)
+/get_album debug - Получить альбом только админам (дебаг режим)
+/send_new_photos - Отправить новые фото пользователям (вручную)
 /get_song_requests - Предложения треков
 
 🎁 <b>Управление вишлистом:</b>

@@ -143,6 +143,21 @@ async def init_database():
             except Exception as migration_error:
                 logger.error(f"Ошибка миграции БД: {migration_error}")
             
+            # Проверяем и добавляем новое поле sent_to_users в таблицу album_files если его нет
+            try:
+                cursor = await db.execute("PRAGMA table_info(album_files)")
+                columns = await cursor.fetchall()
+                column_names = [column[1] for column in columns]
+                
+                if 'sent_to_users' not in column_names:
+                    logger.info("Добавляем поле sent_to_users в таблицу album_files")
+                    await db.execute("ALTER TABLE album_files ADD COLUMN sent_to_users BOOLEAN DEFAULT 0")
+                    await db.commit()
+                    logger.info("Поле sent_to_users добавлено успешно")
+                    
+            except Exception as migration_error:
+                logger.error(f"Ошибка миграции album_files: {migration_error}")
+            
             logger.info("База данных инициализирована")
             
     except Exception as e:
@@ -445,6 +460,21 @@ async def setup_scheduler_jobs(scheduler: AsyncIOScheduler, bot: Bot):
             timezone=SCHEDULER_TIMEZONE
         )
         
+        # Автоматическая отправка новых фото каждый час (только после дня рождения)
+        birthday_datetime = datetime.strptime(BIRTHDAY_DATE, "%Y-%m-%d")
+        if datetime.now() >= birthday_datetime:
+            scheduler.add_job(
+                send_new_photos_to_users,
+                'interval',
+                hours=1,
+                args=[bot],
+                id='auto_send_photos',
+                timezone=SCHEDULER_TIMEZONE
+            )
+            logger.info("📸 Автоматическая отправка новых фото настроена (каждый час)")
+        else:
+            logger.info("📸 Автоматическая отправка фото будет активирована после дня рождения")
+        
         logger.info("Scheduled jobs настроены")
         
     except Exception as e:
@@ -522,8 +552,13 @@ async def send_reminder(bot: Bot):
 
 
 
-async def create_album(bot: Bot):
-    """Создать альбом из всех загруженных файлов"""
+async def create_album(bot: Bot, debug_mode: bool = False):
+    """Создать альбом из всех загруженных файлов
+    
+    Args:
+        bot: Экземпляр бота
+        debug_mode: Если True, отправляет альбом только админам (без уведомления пользователей)
+    """
     try:
         async with aiosqlite.connect(DATABASE_PATH) as db:
             async with db.execute("""
@@ -533,6 +568,10 @@ async def create_album(bot: Bot):
             """) as cursor:
                 files = await cursor.fetchall()
         
+        # Инициализируем списки файлов
+        photos = []
+        videos = []
+        
         if not files:
             message = "Альбом пуст - никто не загрузил фото с тусовки 😢"
         else:
@@ -541,33 +580,180 @@ async def create_album(bot: Bot):
             videos = [f[0] for f in files if f[1] == 'video']
             
             message = f"🎉 Альбом с тусовки готов!\n\nВсего файлов: {len(files)}"
-            
-            # Отправляем альбом админам
-            for admin_id in ADMIN_IDS:
-                try:
-                    if photos:
-                        await bot.send_media_group(admin_id, [{"type": "photo", "media": photo} for photo in photos])
-                    if videos:
-                        for video in videos:
-                            await bot.send_video(admin_id, video)
-                except Exception as e:
+        
+        # Отправляем альбом админам (всегда)
+        for admin_id in ADMIN_IDS:
+            try:
+                # Отправляем фото частями по 10 штук (лимит Telegram для media_group)
+                if photos:
+                    for i in range(0, len(photos), 10):
+                        photo_chunk = photos[i:i+10]
+                        await bot.send_media_group(admin_id, [{"type": "photo", "media": photo} for photo in photo_chunk])
+                        # Небольшая задержка между частями для избежания rate limiting
+                        if i + 10 < len(photos):
+                            await asyncio.sleep(0.5)
+                
+                # Отправляем видео по одному
+                if videos:
+                    for video in videos:
+                        await bot.send_video(admin_id, video)
+                        
+                logger.info(f"✅ Альбом успешно отправлен админу {admin_id}")
+                        
+            except Exception as e:
+                # Более информативное логирование ошибок для админов
+                if "chat not found" in str(e).lower():
+                    logger.warning(f"⚠️ Админ {admin_id} недоступен (возможно, заблокировал бота или неверный ID)")
+                elif "flood control" in str(e).lower():
+                    logger.warning(f"⏳ Rate limiting при отправке админу {admin_id}: {e}")
+                else:
                     logger.error(f"Ошибка отправки альбома админу {admin_id}: {e}")
         
-        # Уведомляем всех пользователей
+        # В дебаг режиме уведомляем только админов, иначе всех пользователей
+        if debug_mode:
+            # В дебаг режиме отправляем сообщение только админам
+            for admin_id in ADMIN_IDS:
+                try:
+                    debug_message = f"🔧 DEBUG MODE\n\n{message}"
+                    await bot.send_message(admin_id, debug_message)
+                except Exception as e:
+                    logger.error(f"Ошибка отправки дебаг сообщения админу {admin_id}: {e}")
+            logger.info("Альбом создан и отправлен в дебаг режиме (только админам)")
+        else:
+            # Обычный режим - отправляем альбом всем пользователям
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                async with db.execute("SELECT user_id FROM users") as cursor:
+                    user_ids = await cursor.fetchall()
+            
+            for user_id_tuple in user_ids:
+                try:
+                    user_id = user_id_tuple[0]
+                    
+                    # Отправляем фото частями по 10 штук (лимит Telegram для media_group)
+                    if photos:
+                        for i in range(0, len(photos), 10):
+                            photo_chunk = photos[i:i+10]
+                            await bot.send_media_group(user_id, [{"type": "photo", "media": photo} for photo in photo_chunk])
+                            # Небольшая задержка между частями для избежания rate limiting
+                            if i + 10 < len(photos):
+                                await asyncio.sleep(0.5)
+                    
+                    # Отправляем видео по одному, если есть
+                    if videos:
+                        for video in videos:
+                            await bot.send_video(user_id, video)
+                    
+                    # Отправляем текстовое сообщение
+                    await bot.send_message(user_id, message)
+                    
+                except Exception as e:
+                    logger.error(f"Ошибка отправки альбома пользователю {user_id}: {e}")
+            logger.info("Альбом создан и отправлен всем пользователям")
+            
+            # Помечаем все фото как отправленные пользователям
+            if files:
+                async with aiosqlite.connect(DATABASE_PATH) as db:
+                    await db.execute("""
+                        UPDATE album_files 
+                        SET sent_to_users = 1 
+                        WHERE file_type = 'photo'
+                    """)
+                    await db.commit()
+                logger.info("📸 Все фото помечены как отправленные пользователям")
+        
+    except Exception as e:
+        logger.error(f"Ошибка создания альбома: {e}")
+
+
+async def send_new_photos_to_users(bot: Bot):
+    """Автоматически отправить новые фото пользователям (каждый час)"""
+    try:
+        # Проверяем, не активирован ли архивный режим
+        if is_archive_mode():
+            logger.info("📸 Архивный режим активирован, автоматическая отправка фото отключена")
+            return
+        # Находим фото, которые еще не были отправлены пользователям
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            async with db.execute("""
+                SELECT id, file_id, file_type, user_id
+                FROM album_files
+                WHERE sent_to_users = 0 AND file_type = 'photo'
+                ORDER BY timestamp ASC
+            """) as cursor:
+                new_photos = await cursor.fetchall()
+        
+        if not new_photos:
+            logger.info("📸 Новых фото для отправки пользователям нет")
+            return
+        
+        logger.info(f"📸 Найдено {len(new_photos)} новых фото для отправки")
+        
+        # Получаем список всех пользователей
         async with aiosqlite.connect(DATABASE_PATH) as db:
             async with db.execute("SELECT user_id FROM users") as cursor:
                 user_ids = await cursor.fetchall()
         
+        if not user_ids:
+            logger.warning("📸 Нет пользователей для отправки фото")
+            return
+        
+        # Группируем фото по 10 штук для отправки альбомом
+        photo_file_ids = [photo[1] for photo in new_photos]
+        
+        # Отправляем фото всем пользователям
         for user_id_tuple in user_ids:
             try:
-                await bot.send_message(user_id_tuple[0], message)
+                user_id = user_id_tuple[0]
+                
+                # Отправляем фото частями по 10 штук (лимит Telegram для media_group)
+                for i in range(0, len(photo_file_ids), 10):
+                    photo_chunk = photo_file_ids[i:i+10]
+                    
+                    if len(photo_chunk) == 1:
+                        # Если одно фото, отправляем как обычное фото с подписью
+                        await bot.send_photo(
+                            user_id, 
+                            photo_chunk[0], 
+                            caption="📸 Новое фото добавлено в альбом!"
+                        )
+                    else:
+                        # Если несколько фото, отправляем как альбом
+                        media_group = [{"type": "photo", "media": photo} for photo in photo_chunk]
+                        # Добавляем подпись только к первому фото
+                        media_group[0]["caption"] = f"📸 Добавлено {len(photo_chunk)} новых фото в альбом!"
+                        await bot.send_media_group(user_id, media_group)
+                    
+                    # Увеличенная задержка между частями для избежания rate limiting
+                    if i + 10 < len(photo_file_ids):
+                        await asyncio.sleep(2.0)  # Увеличиваем до 2 секунд
+                
+                # Задержка между пользователями для избежания flood control
+                await asyncio.sleep(1.0)
+                
+                logger.info(f"📸 Отправлено {len(photo_file_ids)} фото пользователю {user_id}")
+                
             except Exception as e:
-                logger.error(f"Ошибка отправки альбома пользователю {user_id_tuple[0]}: {e}")
+                logger.error(f"Ошибка отправки новых фото пользователю {user_id}: {e}")
+                # Если ошибка rate limiting, ждем дольше
+                if "Flood control exceeded" in str(e) or "Too Many Requests" in str(e):
+                    logger.info("⏳ Обнаружен rate limiting, ждем 5 секунд...")
+                    await asyncio.sleep(5.0)
         
-        logger.info("Альбом создан и отправлен")
+        # Помечаем фото как отправленные пользователям только в конце, когда все отправлено
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            photo_ids = [photo[0] for photo in new_photos]
+            placeholders = ','.join('?' * len(photo_ids))
+            await db.execute(f"""
+                UPDATE album_files 
+                SET sent_to_users = 1 
+                WHERE id IN ({placeholders})
+            """, photo_ids)
+            await db.commit()
+        
+        logger.info(f"📸 Автоматическая отправка завершена: {len(new_photos)} фото отправлено {len(user_ids)} пользователям")
         
     except Exception as e:
-        logger.error(f"Ошибка создания альбома: {e}")
+        logger.error(f"Ошибка автоматической отправки новых фото: {e}")
 
 
 # === RATE LIMITING ===
